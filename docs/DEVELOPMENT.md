@@ -33,7 +33,9 @@ LECTURESCRIBE_SDK="$(xcrun --sdk macosx --show-sdk-path)" ./scripts/test.sh
 
 ## 녹음 권한과 개발 서명
 
-**실행 중인 앱 불러오기**는 `NSWorkspace`로 앱 이름을 조회하므로 화면·오디오 권한을 요청하지 않습니다. `SCShareableContent`는 실제 녹음을 시작할 때 호출합니다. 최초 권한을 허용한 뒤에는 **⌘Q 또는 강의노트 종료로 완전히 종료하고 다시 실행**합니다. 창만 닫으면 메뉴 막대의 앱은 계속 실행됩니다. [Apple의 ScreenCaptureKit 예제](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos)도 권한 허용 후 재실행을 안내합니다.
+**실행 중인 앱 불러오기** 또는 현재 녹음 대상을 누르면 선택 팝오버가 바로 열립니다. 목록에서 앱 이름 검색과 새로고침을 지원하며, 선택한 앱에 체크를 표시합니다. 앱 조회는 `NSWorkspace`를 사용하므로 화면·오디오 권한을 요청하지 않습니다. 새로고침 후 선택한 앱이 목록에서 사라지면 재선택을 안내하고 녹음 시작을 막습니다. 전체 소리로 자동 전환하지 않습니다.
+
+`SCShareableContent`는 실제 녹음을 시작할 때 호출합니다. 최초 권한을 허용한 뒤에는 **⌘Q 또는 강의노트 종료로 완전히 종료하고 다시 실행**합니다. 창만 닫으면 메뉴 막대의 앱은 계속 실행됩니다. [Apple의 ScreenCaptureKit 예제](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos)도 권한 허용 후 재실행을 안내합니다.
 
 기본 ad-hoc 서명은 변경된 빌드마다 코드 식별이 달라질 수 있어 이전 녹음 권한이 유지되지 않을 수 있습니다. 설정에 허용으로 표시되더라도 앱을 업데이트한 뒤 녹음이 계속 실패한다면, 앱을 종료하고 **화면 및 시스템 오디오 녹음** 목록에서 **강의노트 항목만 −로 제거한 뒤 +로 현재 실행할 앱을 다시 추가**합니다. 응용 프로그램에 설치했다면 그 폴더의 앱을 선택하고 다시 실행합니다. 다른 앱의 권한을 초기화할 필요는 없습니다. [Apple DTS의 서명 설명](https://developer.apple.com/forums/thread/819406), [코드 서명 요구사항](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
 
@@ -87,6 +89,8 @@ LECTURESCRIBE_SIGNING_IDENTITY="Apple Development: YOUR_NAME (YOUR_ID)" ./script
 이 수치는 처리 속도나 인식 정확도 벤치마크가 아닙니다. 실제 Zoom 수업 캡처, 수 시간 연속 녹음·전사, 배터리 사용량, 여러 기기·OS 조합은 아직 검증 범위 밖입니다.
 
 1.1.1에서는 설치된 앱에서 앱 목록 반복 조회와 Zoom 선택이 권한 요청 없이 동작하는 것을 확인했습니다. 실제 녹음 시작 시의 권한 허용은 별도 단계입니다.
+
+1.1.2에서는 불러오기 버튼을 누르는 즉시 목록이 열리고, Zoom 검색·선택·재선택 표시, 검색 결과 없음 안내, Esc로 목록만 닫기가 동작하는 것을 설치된 앱에서 확인했습니다.
 
 수동 검증은 **폴더 선택 → 녹음 대상 앱 선택 → 권한 허용 → 소리 재생 중 녹음 → 종료 → 전사·요약 → 내보내기 → 재실행** 순서로 진행합니다. 메뉴 막대에서 창을 닫고 다시 여는 동작과 작업 중단 후 원본 보존도 확인합니다.
 

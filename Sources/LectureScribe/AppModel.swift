@@ -40,6 +40,12 @@ final class AppModel {
         case .application(let id): applications.first { $0.id == id }?.name ?? "선택한 앱"
         }
     }
+    var isCaptureSourceAvailable: Bool {
+        switch source {
+        case .system: true
+        case .application(let id): applications.contains { $0.id == id }
+        }
+    }
     var store: WorkspaceStore? { workspaceURL.map(WorkspaceStore.init(root:)) }
 
     init() {
@@ -103,6 +109,10 @@ final class AppModel {
 
     func startRecording() async {
         guard let store, !isBusy else { return }
+        guard isCaptureSourceAvailable else {
+            errorMessage = "선택한 앱이 실행 중이지 않습니다. 앱 목록을 불러와 녹음할 앱을 다시 선택해 주세요."
+            return
+        }
         isBusy = true
         isStarting = true
         startupCaptureError = nil

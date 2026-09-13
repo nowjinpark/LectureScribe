@@ -297,7 +297,7 @@ struct ContentView: View {
                 Button("중단") { model.cancelProcessing() }.buttonStyle(.borderless)
             }
             Spacer()
-            Text("강의노트  1.1.1")
+            Text("강의노트  1.1.2")
         }.font(.system(size: 10)).foregroundStyle(Palette.muted).padding(.horizontal, 36).padding(.vertical, 13).background(.white.opacity(0.5))
     }
 
@@ -312,19 +312,7 @@ struct ContentView: View {
                 Text("강의 제목").font(.system(size: 12, weight: .semibold))
                 TextField("예: 머신러닝 3주차", text: $model.newTitle).textFieldStyle(.roundedBorder)
             }
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("녹음할 소리").font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    Button("실행 중인 앱 불러오기") { model.refreshApplications() }.font(.system(size: 11))
-                }
-                Picker("녹음할 소리", selection: $model.source) {
-                    Text("Mac 전체 소리").tag(AudioCaptureSource.system)
-                    ForEach(model.applications) { app in Text(app.name).tag(AudioCaptureSource.application(app.id)) }
-                }.labelsHidden()
-                Text("Zoom만 녹음하려면 앱을 불러온 뒤 Zoom을 선택하세요. 전체 소리는 알림과 다른 앱 소리도 함께 담깁니다.")
-                    .font(.system(size: 11)).foregroundStyle(Palette.muted).lineSpacing(4)
-            }
+            RecordingSourcePicker(model: model)
             Picker("강의 언어", selection: $model.language) {
                 Text("한국어").tag("ko-KR")
                 Text("English").tag("en-US")
@@ -339,8 +327,118 @@ struct ContentView: View {
                 if model.isStarting { ProgressView().controlSize(.small); Text("녹음 준비 중…").font(.system(size: 12)) }
                 Spacer()
                 Button("취소") { model.showNewLecture = false }.disabled(model.isStarting)
-                Button("녹음 시작") { Task { await model.startRecording() } }.buttonStyle(.borderedProminent).disabled(model.isBusy)
+                Button("녹음 시작") { Task { await model.startRecording() } }.buttonStyle(.borderedProminent).disabled(model.isBusy || !model.isCaptureSourceAvailable)
             }.padding(.top, 4)
         }.padding(32).frame(width: 500).background(Palette.paper).interactiveDismissDisabled(model.isStarting)
+    }
+}
+
+private struct RecordingSourcePicker: View {
+    @Bindable var model: AppModel
+    @State private var isChoosingSource = false
+    @State private var query = ""
+
+    private var matchingApplications: [CaptureApplication] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return term.isEmpty ? model.applications : model.applications.filter {
+            $0.name.localizedStandardContains(term)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("녹음할 소리").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button("실행 중인 앱 불러오기", action: showApplications).font(.system(size: 11))
+            }
+            Button(action: showApplications) {
+                HStack(spacing: 9) {
+                    Image(systemName: model.source == .system ? "speaker.wave.2" : "app")
+                    Text(model.sourceName).fontWeight(.medium)
+                    Spacer()
+                    Text("변경").foregroundStyle(Palette.muted)
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                }
+                .font(.system(size: 12)).padding(11)
+                .background(Palette.sidebar, in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("녹음할 소리 선택")
+            .accessibilityValue(model.sourceName)
+            .popover(isPresented: $isChoosingSource, arrowEdge: .bottom) { applicationList }
+
+            if !model.isCaptureSourceAvailable {
+                Text("선택한 앱이 실행 중이지 않습니다. 목록을 열어 다시 선택해 주세요.")
+                    .font(.system(size: 11)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("앱 목록에서 Zoom을 선택하면 Zoom 소리만 담습니다. Mac 전체 소리는 알림과 다른 앱 소리도 함께 담깁니다.")
+                .font(.system(size: 11)).foregroundStyle(Palette.muted).lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .disabled(model.isBusy)
+        .onAppear { model.refreshApplications() }
+    }
+
+    private func showApplications() {
+        model.refreshApplications()
+        query = ""
+        isChoosingSource = true
+    }
+
+    private var applicationList: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("녹음할 앱 선택").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button("새로고침") { model.refreshApplications() }.font(.system(size: 11))
+            }
+            sourceRow("Mac 전체 소리", symbol: "speaker.wave.2", source: .system)
+            Divider()
+            TextField("앱 이름 검색", text: $query).textFieldStyle(.roundedBorder)
+                .accessibilityLabel("앱 이름 검색")
+            Text("실행 중인 앱 \(model.applications.count)개").font(.system(size: 11)).foregroundStyle(Palette.muted)
+            if matchingApplications.isEmpty {
+                Text(model.applications.isEmpty
+                     ? "실행 중인 앱을 찾지 못했습니다. Zoom 등 녹음할 앱을 실행한 뒤 새로고침을 눌러 주세요."
+                     : "검색 결과가 없습니다. 앱 이름을 다시 확인해 주세요.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true).padding(.vertical, 8)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 3) {
+                        ForEach(matchingApplications) { app in
+                            sourceRow(app.name, symbol: "app", source: .application(app.id))
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(matchingApplications.count) * 39, 220))
+            }
+        }
+        .padding(16).frame(width: 340).background(Palette.paper)
+        .foregroundStyle(Palette.ink)
+        .onExitCommand { isChoosingSource = false }
+    }
+
+    private func sourceRow(_ name: String, symbol: String, source: AudioCaptureSource) -> some View {
+        let selected = model.source == source
+        return Button {
+            model.source = source
+            isChoosingSource = false
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: symbol).frame(width: 18)
+                Text(name).lineLimit(1)
+                Spacer()
+                if selected { Image(systemName: "checkmark").foregroundStyle(Palette.green) }
+            }
+            .font(.system(size: 13)).padding(.horizontal, 10).frame(height: 36)
+            .background(selected ? Palette.sidebar : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(name)
+        .accessibilityValue(selected ? "선택됨" : "")
     }
 }
