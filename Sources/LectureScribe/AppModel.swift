@@ -90,9 +90,8 @@ final class AppModel {
         selectedID = records.first?.id
     }
 
-    func refreshApplications() async {
-        do { applications = try await recorder.applications() }
-        catch { errorMessage = error.localizedDescription }
+    func refreshApplications() {
+        applications = recorder.applications()
     }
 
     func beginNewLecture() {

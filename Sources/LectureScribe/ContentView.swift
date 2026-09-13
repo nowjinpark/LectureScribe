@@ -297,7 +297,7 @@ struct ContentView: View {
                 Button("중단") { model.cancelProcessing() }.buttonStyle(.borderless)
             }
             Spacer()
-            Text("강의노트  1.1")
+            Text("강의노트  1.1.1")
         }.font(.system(size: 10)).foregroundStyle(Palette.muted).padding(.horizontal, 36).padding(.vertical, 13).background(.white.opacity(0.5))
     }
 
@@ -316,7 +316,7 @@ struct ContentView: View {
                 HStack {
                     Text("녹음할 소리").font(.system(size: 12, weight: .semibold))
                     Spacer()
-                    Button("실행 중인 앱 불러오기") { Task { await model.refreshApplications() } }.font(.system(size: 11))
+                    Button("실행 중인 앱 불러오기") { model.refreshApplications() }.font(.system(size: 11))
                 }
                 Picker("녹음할 소리", selection: $model.source) {
                     Text("Mac 전체 소리").tag(AudioCaptureSource.system)
@@ -332,7 +332,7 @@ struct ContentView: View {
             Toggle("텍스트 변환 후 자동 요약", isOn: $model.autoSummarize).font(.system(size: 12))
             VStack(alignment: .leading, spacing: 7) {
                 Label("마이크 없이 앱의 소리를 직접 녹음", systemImage: "speaker.wave.2")
-                Text("macOS에서 화면 및 시스템 오디오 녹음을 허용해 주세요. 영상은 파일로 저장하지 않습니다.")
+                Text("녹음을 시작할 때 화면 및 시스템 오디오 녹음 권한이 필요합니다. 앱 목록을 불러올 때는 권한을 요청하지 않습니다. 영상은 파일로 저장하지 않습니다.")
                     .font(.system(size: 11)).foregroundStyle(Palette.muted).lineSpacing(4)
             }.font(.system(size: 12)).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(Palette.sidebar, in: RoundedRectangle(cornerRadius: 10))
             HStack {

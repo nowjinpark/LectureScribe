@@ -18,6 +18,8 @@ cp "$BIN_DIR/LectureScribe" "$APP_PATH/Contents/MacOS/LectureScribe"
 cp "$APP_ROOT/Resources/Info.plist" "$APP_PATH/Contents/Info.plist"
 swift "$APP_ROOT/scripts/make-icon.swift" "$APP_ROOT/.build/AppIcon.iconset"
 iconutil -c icns "$APP_ROOT/.build/AppIcon.iconset" -o "$APP_PATH/Contents/Resources/AppIcon.icns"
-codesign --force --deep --sign - "$APP_PATH"
+# Reuse an Apple Development identity across local builds when available. Ad-hoc
+# signatures change with the binary and may require granting capture access again.
+codesign --force --deep --sign "${LECTURESCRIBE_SIGNING_IDENTITY:--}" "$APP_PATH"
 codesign --verify --deep --strict "$APP_PATH"
 print "앱 생성 완료: $APP_PATH"

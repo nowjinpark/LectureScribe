@@ -27,11 +27,18 @@ final class SystemAudioRecorder {
     private var isStarting = false
     private var isStopping = false
 
-    func applications() async throws -> [CaptureApplication] {
-        let content = try await shareableContent()
-        return content.applications
-            .filter { $0.processID != ProcessInfo.processInfo.processIdentifier && !$0.applicationName.isEmpty }
-            .map { CaptureApplication(id: $0.processID, name: $0.applicationName, bundleIdentifier: $0.bundleIdentifier) }
+    func applications() -> [CaptureApplication] {
+        // Listing app names must not prompt for screen/audio access. Resolve the
+        // selected process with ScreenCaptureKit only when recording starts.
+        NSWorkspace.shared.runningApplications
+            .filter {
+                $0.activationPolicy == .regular && !$0.isTerminated
+                    && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+            }
+            .compactMap { app -> CaptureApplication? in
+                guard let name = app.localizedName, !name.isEmpty else { return nil }
+                return CaptureApplication(id: app.processIdentifier, name: name, bundleIdentifier: app.bundleIdentifier ?? "")
+            }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
@@ -58,7 +65,7 @@ final class SystemAudioRecorder {
             filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
         case .application(let processID):
             guard let application = content.applications.first(where: { $0.processID == processID }) else {
-                throw AudioRecordingError(message: "선택한 앱이 종료되었습니다. 앱을 실행하고 목록을 새로 고쳐 주세요.")
+                throw AudioRecordingError(message: "선택한 앱을 녹음 대상으로 찾지 못했습니다. 앱 창을 연 뒤 ‘실행 중인 앱 불러오기’를 눌러 다시 선택해 주세요.")
             }
             filter = SCContentFilter(display: display, including: [application], exceptingWindows: [])
         }
@@ -115,7 +122,7 @@ final class SystemAudioRecorder {
     private static func captureError(_ error: Error) -> Error {
         let nsError = error as NSError
         if nsError.domain == SCStreamErrorDomain && nsError.code == SCStreamError.Code.userDeclined.rawValue {
-            return AudioRecordingError(message: "시스템 오디오 녹음 권한이 필요합니다. 시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 이 앱을 허용한 뒤 앱을 다시 실행해 주세요.")
+            return AudioRecordingError(message: "macOS에서 시스템 오디오 녹음을 허용하지 않았습니다.\n\n시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 ‘강의노트’를 허용한 뒤, ⌘Q로 완전히 종료하고 다시 열어 주세요. 창만 닫으면 앱은 종료되지 않습니다.\n\n이미 켜져 있는데 앱을 업데이트한 뒤에도 이 안내가 나오면, 설정 목록에서 ‘강의노트’만 − 버튼으로 제거하고 + 버튼으로 지금 실행할 앱을 다시 추가해 주세요. 응용 프로그램에 설치했다면 그 폴더의 ‘강의노트’를 선택하세요.")
         }
         return AudioRecordingError(message: "시스템 오디오를 녹음할 수 없습니다: \(error.localizedDescription)")
     }
