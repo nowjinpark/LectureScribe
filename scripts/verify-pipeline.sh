@@ -7,16 +7,4 @@ if (( $# != 2 )); then
 fi
 
 verificationScriptDirectory=${0:A:h}
-verificationProjectDirectory=${verificationScriptDirectory:h}
-verificationBuildDirectory=$(mktemp -d /private/tmp/lecturescribe-pipeline.XXXXXX)
-trap 'rm -rf "$verificationBuildDirectory"' EXIT
-
-xcrun swiftc -swift-version 6 -target arm64-apple-macosx26.0 \
-  -module-cache-path "$verificationBuildDirectory/module-cache" \
-  "$verificationProjectDirectory/Sources/LectureScribe/TranscriptionService.swift" \
-  "$verificationProjectDirectory/Sources/LectureScribe/SummaryService.swift" \
-  "$verificationProjectDirectory/Sources/LectureScribe/WorkspaceStore.swift" \
-  "$verificationScriptDirectory/verify-pipeline.swift" \
-  -o "$verificationBuildDirectory/verify-pipeline"
-
-"$verificationBuildDirectory/verify-pipeline" "$1" "$2"
+exec "$verificationScriptDirectory/run-service-verification.sh" pipeline "$1" "$2"

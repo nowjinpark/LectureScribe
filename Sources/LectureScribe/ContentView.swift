@@ -32,7 +32,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.showNewLecture) { newLectureSheet }
         .alert("작업을 확인해 주세요", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("확인") { model.errorMessage = nil }
-            Button("녹음 권한 설정") { model.openPermissionSettings(); model.errorMessage = nil }
+            if model.needsCapturePermissionHelp {
+                Button("녹음 권한 설정") { model.openPermissionSettings(); model.errorMessage = nil }
+            }
         } message: { Text(model.errorMessage ?? "") }
     }
 
@@ -117,7 +119,7 @@ struct ContentView: View {
                 Text("LESS LISTENING BACK, MORE LEARNING").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5).foregroundStyle(Palette.green).padding(.top, 42)
                 Text("강의에 집중하세요.\n기록은 맡겨두세요.")
                     .font(.system(size: 42, weight: .bold)).tracking(-1.5).lineSpacing(6).padding(.top, 16)
-                Text("Zoom 수업도, 온라인 강의도.\n맥에서 들리는 소리를 텍스트와 요약으로 정리합니다.")
+                Text("Zoom 강의 소리를 직접 녹음하고,\n녹음이 끝나면 시간 정보가 있는 텍스트로 변환합니다.")
                     .font(.system(size: 15)).foregroundStyle(Palette.muted).lineSpacing(7).padding(.top, 19)
                 HStack(spacing: 12) {
                     Button { model.beginNewLecture() } label: { Label("첫 강의 시작하기", systemImage: "waveform").padding(.horizontal, 10).padding(.vertical, 7) }.buttonStyle(.borderedProminent).disabled(model.isBusy)
@@ -126,7 +128,7 @@ struct ContentView: View {
                 HStack(spacing: 14) {
                     featureCard("01", "소리를 담고", "Zoom 또는 Mac 전체 소리를\n마이크 없이 직접 녹음", "waveform")
                     featureCard("02", "문장으로 남기고", "녹음이 끝나면 한국어·영어를\n텍스트로 자동 변환", "text.alignleft")
-                    featureCard("03", "핵심을 꺼내세요", "요약과 원본을 강의별로\n내 폴더에 함께 저장", "sparkles")
+                    featureCard("03", "텍스트로 꺼내세요", "원본 음성과 TXT·SRT를\n내 폴더에 함께 저장", "square.and.arrow.up")
                 }.padding(.top, 48)
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "info.circle").padding(.top, 1)
@@ -267,6 +269,8 @@ struct ContentView: View {
                 Text("지금 강의를 담고 있어요").font(.system(size: 12, weight: .medium))
             }
             Text(model.lectures.first { $0.id == model.activeID }?.title ?? "강의 녹음").font(.system(size: 28, weight: .bold))
+            Label("녹음 대상: \(model.sourceName)", systemImage: "speaker.wave.2")
+                .font(.system(size: 12)).foregroundStyle(Palette.muted)
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text(TranscriptExport.duration(context.date.timeIntervalSince(model.recordingStartedAt ?? context.date)))
                     .font(.system(size: 65, weight: .light, design: .monospaced)).foregroundStyle(Palette.green)
@@ -281,7 +285,7 @@ struct ContentView: View {
             Text(model.inputLevel < 0.005 ? "소리가 들어오면 파형이 움직입니다. 강의 앱에서 소리가 재생되는지 확인하세요." : "소리가 정상적으로 들어오고 있어요.")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
             Button { Task { await model.stopRecording() } } label: {
-                Label("녹음 종료하고 정리하기", systemImage: "stop.fill").padding(.horizontal, 18).padding(.vertical, 10)
+                Label("녹음 종료하고 텍스트로 변환", systemImage: "stop.fill").padding(.horizontal, 18).padding(.vertical, 10)
             }.buttonStyle(.borderedProminent).padding(.top, 15)
             Text("녹음을 마치면 텍스트 변환이 시작됩니다.").font(.system(size: 11)).foregroundStyle(Palette.muted)
             Spacer()
@@ -292,12 +296,12 @@ struct ContentView: View {
     private var footer: some View {
         HStack(spacing: 6) {
             Circle().fill(Palette.green).frame(width: 5, height: 5)
-            Text(model.isBusy ? model.progress : "음성 · 텍스트 · 요약을 내 폴더에")
+            Text(model.isBusy ? model.progress : "강의 음성과 텍스트를 내 폴더에")
             if model.isBusy && !model.isRecording && !model.isStarting && model.activeID == nil {
                 Button("중단") { model.cancelProcessing() }.buttonStyle(.borderless)
             }
             Spacer()
-            Text("강의노트  1.1.2")
+            Text("강의노트  1.2.0")
         }.font(.system(size: 10)).foregroundStyle(Palette.muted).padding(.horizontal, 36).padding(.vertical, 13).background(.white.opacity(0.5))
     }
 
@@ -310,14 +314,13 @@ struct ContentView: View {
             Text("소리를 담을 앱과 강의 제목을 정해 주세요.").font(.system(size: 13)).foregroundStyle(Palette.muted)
             VStack(alignment: .leading, spacing: 9) {
                 Text("강의 제목").font(.system(size: 12, weight: .semibold))
-                TextField("예: 머신러닝 3주차", text: $model.newTitle).textFieldStyle(.roundedBorder)
+                TextField("예: 머신러닝 3주차", text: $model.newTitle).textFieldStyle(.roundedBorder).disabled(model.isStarting)
             }
             RecordingSourcePicker(model: model)
             Picker("강의 언어", selection: $model.language) {
                 Text("한국어").tag("ko-KR")
                 Text("English").tag("en-US")
-            }.pickerStyle(.segmented)
-            Toggle("텍스트 변환 후 자동 요약", isOn: $model.autoSummarize).font(.system(size: 12))
+            }.pickerStyle(.segmented).disabled(model.isStarting)
             VStack(alignment: .leading, spacing: 7) {
                 Label("마이크 없이 앱의 소리를 직접 녹음", systemImage: "speaker.wave.2")
                 Text("녹음을 시작할 때 화면 및 시스템 오디오 녹음 권한이 필요합니다. 앱 목록을 불러올 때는 권한을 요청하지 않습니다. 영상은 파일로 저장하지 않습니다.")
@@ -409,7 +412,7 @@ private struct RecordingSourcePicker: View {
                 ScrollView {
                     LazyVStack(spacing: 3) {
                         ForEach(matchingApplications) { app in
-                            sourceRow(app.name, symbol: "app", source: .application(app.id))
+                            sourceRow(app.name, symbol: "app", source: .application(app))
                         }
                     }
                 }

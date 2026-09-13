@@ -11,6 +11,9 @@ struct PipelineVerification {
 
     struct Report: Codable {
         let passed: Bool
+        let accuracyVerified: Bool
+        let engine: String
+        let note: String
         let verifiedAt: Date
         let sourceFile: String
         let lectureDirectory: String
@@ -65,10 +68,8 @@ struct PipelineVerification {
             onSegment: { print(String(format: "SEGMENT %.2f–%.2f (%d characters)", $0.start, $0.end, $0.text.count)) }
         )
         try require(!lecture.segments.isEmpty, "Transcription returned no segments.")
-        try require(lecture.segments.last!.end > 60, "The transcript was truncated before the one-minute boundary.")
-        try require(lecture.segments.last!.end >= duration - 5, "The final audio was not transcribed.")
         try require(lecture.transcript.unicodeScalars.contains { (0xAC00...0xD7A3).contains($0.value) }, "The transcript does not contain Korean text.")
-        try require(lecture.segments.allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start }, "A transcript segment has invalid timestamps.")
+        try require(lecture.segments.allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start && $0.end <= duration + 0.1 }, "A transcript segment has invalid or out-of-file timestamps.")
         try require(zip(lecture.segments, lecture.segments.dropFirst()).allSatisfy { $0.start <= $1.start }, "Transcript segments are out of order.")
 
         lecture.status = .summarizing
@@ -106,6 +107,9 @@ struct PipelineVerification {
         let method = lecture.summary!.method
         let report = Report(
             passed: true,
+            accuracyVerified: false,
+            engine: TranscriptionService.engineDescription,
+            note: "These are structural checks. Compare the complete spoken source with the transcript and summary separately; an ending timestamp cannot prove completeness, and trailing silence does not require text.",
             verifiedAt: Date(),
             sourceFile: audioURL.path,
             lectureDirectory: folder.path,
@@ -116,13 +120,13 @@ struct PipelineVerification {
             summaryMethod: method,
             usedGenerativeAI: method.hasPrefix("Apple Intelligence"),
             exports: ["transcript.txt", "transcript.srt", "summary.md", "summary.txt", "lecture.json", lecture.audioFileName!],
-            checks: ["source audio longer than 60 seconds", "transcription reaches final audio", "Korean text present", "ordered finite timestamps", "summary nonempty", "exact save/reload", "TXT export", "SRT structure and text", "Markdown and TXT summaries"]
+            checks: ["source audio longer than 60 seconds", "Korean text present", "ordered finite in-file timestamps", "summary nonempty", "exact save/reload", "TXT export", "SRT structure and text", "Markdown and TXT summaries"]
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(report).write(to: folder.appendingPathComponent("verification-report.json"), options: .atomic)
-        print("PIPELINE PASS")
+        print("PIPELINE STRUCTURAL CHECKS PASS — recognition and summary accuracy require source comparison.")
         print("SUMMARY METHOD: \(method)")
         print("GENERATIVE AI: \(report.usedGenerativeAI ? "yes" : "no — source-sentence extraction fallback")")
         print("RESULTS: \(folder.path)")

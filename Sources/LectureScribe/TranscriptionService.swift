@@ -1,7 +1,6 @@
 import AVFoundation
-import CoreMedia
 import Foundation
-import Speech
+import WhisperKit
 
 struct TranscriptSegment: Codable, Hashable, Sendable {
     var start: Double
@@ -9,9 +8,16 @@ struct TranscriptSegment: Codable, Hashable, Sendable {
     var text: String
 }
 
-/// Uses macOS's long-form speech model. Audio never leaves the Mac.
+/// A fixed multilingual Whisper model runs locally; recordings are never uploaded.
 @MainActor
 final class TranscriptionService {
+    static let modelName = "large-v3-v20240930_626MB"
+    static let engineDescription = "WhisperKit 1.1.0 · large-v3 Turbo 626MB"
+    static var modelCacheDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LectureScribe/SpeechModels", isDirectory: true)
+    }
+
     enum Failure: LocalizedError {
         case unavailable
         case unsupportedLocale(String)
@@ -24,11 +30,11 @@ final class TranscriptionService {
         var errorDescription: String? {
             switch self {
             case .unavailable:
-                return "이 Mac에서는 Apple의 기기 내 음성 전사 기능을 사용할 수 없습니다. Apple Silicon Mac과 macOS 26 이상이 필요합니다."
+                return "이 Mac에서는 기기 내 음성 전사 기능을 사용할 수 없습니다. Apple Silicon Mac과 macOS 26 이상이 필요합니다."
             case .unsupportedLocale(let language):
-                return "이 Mac의 음성 모델이 \(language) 전사를 지원하지 않습니다. 다른 언어를 선택하거나 macOS를 업데이트한 뒤 다시 시도해 주세요. 원본 녹음은 그대로 보관됩니다."
+                return "음성 모델이 \(language) 전사를 지원하지 않습니다. 강의 언어를 확인해 주세요. 원본 녹음은 그대로 보관됩니다."
             case .assetInstallation(let reason):
-                return "음성 인식 모델을 준비하지 못했습니다. 처음 사용하는 언어는 인터넷 연결과 충분한 저장 공간이 필요합니다. 연결을 확인한 뒤 다시 시도해 주세요. (\(reason))"
+                return "음성 인식 모델을 준비하지 못했습니다. 처음 한 번은 약 630MB를 내려받기 위한 인터넷 연결과 저장 공간이 필요합니다. 다시 시도해 주세요. (\(reason))"
             case .unreadableAudio(let reason):
                 return "음성 파일을 읽지 못했습니다. WAV, M4A, MP3, AIFF 또는 CAF 형식의 정상적인 오디오 파일인지 확인해 주세요. (\(reason))"
             case .emptyAudio:
@@ -41,11 +47,6 @@ final class TranscriptionService {
         }
     }
 
-    private enum AnalysisOutcome: Sendable {
-        case inputFinished
-        case transcript([TranscriptSegment])
-    }
-
     func transcribe(
         url: URL,
         localeIdentifier: String,
@@ -53,144 +54,173 @@ final class TranscriptionService {
         onSegment: @escaping @MainActor (TranscriptSegment) -> Void
     ) async throws -> [TranscriptSegment] {
         try Task.checkCancellation()
-        guard SpeechTranscriber.isAvailable else { throw Failure.unavailable }
+        // Validate before downloading a model, including files left by interrupted recording.
+        let file: AVAudioFile
+        do { file = try AVAudioFile(forReading: url) }
+        catch { throw Failure.unreadableAudio(error.localizedDescription) }
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        guard file.length > 0, duration.isFinite, duration > 0 else { throw Failure.emptyAudio }
+        let language = Locale(identifier: localeIdentifier).language.languageCode?.identifier ?? ""
+        guard Constants.languageCodes.contains(language) else { throw Failure.unsupportedLocale(localeIdentifier) }
 
-        onProgress("음성 인식 모델 확인 중…")
-        let requestedLocale = Locale(identifier: localeIdentifier)
-        guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
-            let name = Locale(identifier: "ko-KR").localizedString(forIdentifier: localeIdentifier) ?? localeIdentifier
-            throw Failure.unsupportedLocale(name)
-        }
-
-        // Only finalized results are requested; volatile text is never persisted twice.
-        let transcriber = SpeechTranscriber(
-            locale: locale,
-            transcriptionOptions: [],
-            reportingOptions: [],
-            attributeOptions: [.audioTimeRange]
-        )
-        try await prepareAssets(for: transcriber, onProgress: onProgress)
-        try Task.checkCancellation()
-
-        let audioFile: AVAudioFile
-        do {
-            audioFile = try AVAudioFile(forReading: url)
-        } catch {
+        onProgress("녹음된 소리 확인 중…")
+        let plan: AudioSpeechRegions.Plan
+        do { plan = try await AudioSpeechRegions.scan(url) }
+        catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
             throw Failure.unreadableAudio(error.localizedDescription)
         }
-        guard audioFile.length > 0, audioFile.processingFormat.sampleRate > 0 else {
-            throw Failure.emptyAudio
-        }
-        let duration = Double(audioFile.length) / audioFile.processingFormat.sampleRate
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
-        onProgress("Mac에서 강의 전사 중…")
-
+        guard !plan.regions.isEmpty else { throw Failure.noSpeech }
+        try Task.checkCancellation()
+        let pipe = try await prepareModel(onProgress: onProgress)
         do {
-            let segments = try await withTaskCancellationHandler {
-                try await withThrowingTaskGroup(of: AnalysisOutcome.self) { group in
-                    // Consumption runs alongside analysis, so long recordings don't block
-                    // waiting for the results stream to be drained.
-                    group.addTask {
-                        var segments: [TranscriptSegment] = []
-                        var seen = Set<TranscriptSegment>()
-                        for try await result in transcriber.results {
-                            try Task.checkCancellation()
-                            guard result.isFinal else { continue }
-                            let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard !text.isEmpty else { continue }
-                            let rawStart = CMTimeGetSeconds(result.range.start)
-                            let rawEnd = CMTimeGetSeconds(CMTimeRangeGetEnd(result.range))
-                            let start = rawStart.isFinite ? max(0, rawStart) : (segments.last?.end ?? 0)
-                            let end = rawEnd.isFinite ? max(start, rawEnd) : start
-                            let segment = TranscriptSegment(start: start, end: end, text: text)
-                            guard seen.insert(segment).inserted else { continue }
-                            segments.append(segment)
-                            await onSegment(segment)
-                            let percent = min(99, max(0, Int(end / duration * 100)))
-                            await onProgress("Mac에서 강의 전사 중… \(percent)%")
-                        }
-                        try Task.checkCancellation()
-                        return .transcript(segments.sorted { $0.start < $1.start })
+            var allSegments: [TranscriptSegment] = []
+            for region in plan.regions {
+                try Task.checkCancellation()
+                try await WhisperAudioChunks.forEach(in: plan, region: region) { chunk in
+                    try Task.checkCancellation()
+                    // The chunker preserves every source frame, including a final short
+                    // remainder. Digital-zero chunks do not contain speech to decode.
+                    guard chunk.samples.contains(where: { abs($0) > AudioSpeechRegions.digitalSilencePeak }) else { return }
+                    let chunkDuration = Double(chunk.samples.count) / Double(WhisperKit.sampleRate)
+                    let options = DecodingOptions(
+                        task: .transcribe, language: language, temperature: 0,
+                        skipSpecialTokens: true,
+                        // Keep Whisper's normal guard against repeatedly decoding a
+                        // silent tail, but allow the first pass on subsecond speech.
+                        windowClipTime: Float(min(1, chunkDuration / 2)),
+                        concurrentWorkerCount: 2
+                    )
+                    let updates = AsyncStream<[TranscriptSegment]>.makeStream()
+                    let delivery = SegmentDelivery(duration: duration, onProgress: onProgress, onSegment: onSegment)
+                    let consumer = Task { @MainActor in
+                        for await segments in updates.stream { delivery.publish(segments) }
                     }
-                    group.addTask {
-                        let lastSample = try await analyzer.analyzeSequence(from: audioFile)
-                        // Reading the file is not the same as finishing recognition.
-                        try Task.checkCancellation()
-                        if let lastSample {
-                            try await analyzer.finalizeAndFinish(through: lastSample)
-                        } else {
-                            await analyzer.cancelAndFinishNow()
-                            throw Failure.emptyAudio
-                        }
-                        return .inputFinished
+                    pipe.segmentDiscoveryCallback = { segments in
+                        updates.continuation.yield(Self.convert(segments, offset: chunk.offsetSeconds, duration: chunkDuration))
                     }
+                    onProgress("Mac에서 강의 전사 중… \(min(99, Int(chunk.offsetSeconds / duration * 100)))%")
                     do {
-                        var transcript: [TranscriptSegment] = []
-                        for try await outcome in group {
-                            if case .transcript(let segments) = outcome {
-                                transcript = segments
-                            }
-                        }
-                        return transcript
+                        let results = try await pipe.transcribe(
+                            audioArray: chunk.samples, decodeOptions: options,
+                            callback: { _ in Task.isCancelled ? false : nil }
+                        )
+                        let segments = Self.convert(results.flatMap(\.segments), offset: chunk.offsetSeconds, duration: chunkDuration)
+                        pipe.segmentDiscoveryCallback = nil
+                        updates.continuation.finish()
+                        await consumer.value
+                        try Task.checkCancellation()
+                        delivery.publish(segments)
+                        allSegments.append(contentsOf: segments)
                     } catch {
-                        group.cancelAll()
-                        await analyzer.cancelAndFinishNow()
+                        pipe.segmentDiscoveryCallback = nil
+                        updates.continuation.finish()
+                        await consumer.value
                         throw error
                     }
                 }
-            } onCancel: {
-                // The analyzer owns work outside the input task. Stop that work as well.
-                Task { await analyzer.cancelAndFinishNow() }
             }
             try Task.checkCancellation()
-            guard !segments.isEmpty else { throw Failure.noSpeech }
+            var seen = Set<TranscriptSegment>()
+            let transcript = allSegments.sorted {
+                $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start
+            }.filter { seen.insert($0).inserted }
+            guard !transcript.isEmpty else { throw Failure.noSpeech }
+            await pipe.unloadModels()
             onProgress("전사 완료")
-            return segments
+            return transcript
         } catch {
-            await analyzer.cancelAndFinishNow()
+            await pipe.unloadModels()
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             if let failure = error as? Failure { throw failure }
             throw Failure.analysis(error.localizedDescription)
         }
     }
 
-    private func prepareAssets(
-        for transcriber: SpeechTranscriber,
-        onProgress: @escaping @MainActor (String) -> Void
-    ) async throws {
+    private func prepareModel(onProgress: @escaping @MainActor (String) -> Void) async throws -> WhisperKit {
         do {
-            try Task.checkCancellation()
-            guard await AssetInventory.status(forModules: [transcriber]) != .unsupported else {
-                throw Failure.assetInstallation("이 기기에서 해당 언어 모델을 사용할 수 없습니다.")
+            let cache = Self.modelCacheDirectory
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            var modelFolder = cache.appendingPathComponent("models/argmaxinc/whisperkit-coreml/openai_whisper-\(Self.modelName)")
+            let requiredFiles = ["config.json", "generation_config.json"] + ["AudioEncoder", "TextDecoder", "MelSpectrogram"].flatMap { component in
+                ["weights/weight.bin", "model.mil", "coremldata.bin", "metadata.json", "analytics/coremldata.bin"].map { "\(component).mlmodelc/\($0)" }
             }
-            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                onProgress("음성 모델 다운로드 중… 처음 한 번은 시간이 걸릴 수 있습니다.")
-                let progressTask = Task { @MainActor in
-                    while !Task.isCancelled {
-                        let fraction = request.progress.fractionCompleted
-                        if fraction.isFinite, fraction > 0 {
-                            let percent = min(100, max(0, Int(fraction * 100)))
-                            onProgress("음성 모델 다운로드 중… \(percent)%")
-                        }
-                        do { try await Task.sleep(for: .milliseconds(500)) }
-                        catch { return }
+            // A cancelled download can leave weights present while model structure is
+            // incomplete. Resume download unless every required asset is nonempty.
+            if !requiredFiles.allSatisfy({
+                let values = try? modelFolder.appendingPathComponent($0).resourceValues(forKeys: [.fileSizeKey])
+                return (values?.fileSize ?? 0) > 0
+            }) {
+                onProgress("음성 모델 다운로드 중… 처음 한 번은 약 630MB를 내려받습니다.")
+                let updates = AsyncStream<Double>.makeStream()
+                let consumer = Task { @MainActor in
+                    var previous = -1
+                    for await fraction in updates.stream where fraction.isFinite {
+                        let percent = min(100, max(0, Int(fraction * 100)))
+                        guard percent != previous else { continue }
+                        previous = percent
+                        onProgress("음성 모델 다운로드 중… \(percent)% · 처음 한 번만 필요합니다.")
                     }
                 }
-                defer { progressTask.cancel() }
-                try await withTaskCancellationHandler {
-                    try await request.downloadAndInstall()
-                } onCancel: {
-                    request.progress.cancel()
+                do {
+                    modelFolder = try await WhisperKit.download(variant: Self.modelName, downloadBase: cache) {
+                        updates.continuation.yield($0.fractionCompleted)
+                    }
+                    updates.continuation.finish()
+                    await consumer.value
+                } catch {
+                    updates.continuation.finish()
+                    await consumer.value
+                    throw error
                 }
             }
             try Task.checkCancellation()
-            guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
-                throw Failure.assetInstallation("모델 설치가 완료되지 않았습니다.")
+            onProgress("Mac에서 음성 모델 준비 중…")
+            // Passing the actual local model folder skips the remote model lookup on
+            // subsequent runs. The tokenizer is cached in the same base directory.
+            let pipe = try await WhisperKit(WhisperKitConfig(
+                modelFolder: modelFolder.path, tokenizerFolder: cache,
+                verbose: false, prewarm: false, load: true, download: false
+            ))
+            if Task.isCancelled {
+                await pipe.unloadModels()
+                throw CancellationError()
             }
+            return pipe
         } catch {
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
-            if let failure = error as? Failure { throw failure }
             throw Failure.assetInstallation(error.localizedDescription)
+        }
+    }
+
+    nonisolated private static func convert(_ segments: [TranscriptionSegment], offset: Double, duration: Double) -> [TranscriptSegment] {
+        segments.compactMap { segment in
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let start = Double(segment.start)
+            let end = Double(segment.end)
+            guard !text.isEmpty, start.isFinite, end.isFinite, start < duration, end > 0 else { return nil }
+            let boundedStart = min(duration, max(0, start))
+            let boundedEnd = min(duration, max(boundedStart, end))
+            guard boundedEnd > boundedStart else { return nil }
+            return TranscriptSegment(start: offset + boundedStart, end: offset + boundedEnd, text: text)
+        }.sorted { $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start }
+    }
+
+    @MainActor private final class SegmentDelivery {
+        private var seen = Set<TranscriptSegment>()
+        private let duration: Double
+        private let onProgress: @MainActor (String) -> Void
+        private let onSegment: @MainActor (TranscriptSegment) -> Void
+        init(duration: Double, onProgress: @escaping @MainActor (String) -> Void, onSegment: @escaping @MainActor (TranscriptSegment) -> Void) {
+            self.duration = duration
+            self.onProgress = onProgress
+            self.onSegment = onSegment
+        }
+        func publish(_ segments: [TranscriptSegment]) {
+            for segment in segments where seen.insert(segment).inserted {
+                onSegment(segment)
+                onProgress("Mac에서 강의 전사 중… \(min(99, max(0, Int(segment.end / duration * 100))))%")
+            }
         }
     }
 }

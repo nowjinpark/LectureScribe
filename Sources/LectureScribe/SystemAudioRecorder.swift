@@ -7,15 +7,30 @@ struct CaptureApplication: Identifiable, Hashable, Sendable {
     let id: Int32
     let name: String
     let bundleIdentifier: String
+
+    /// A process ID changes when an app relaunches and can be reused by a
+    /// different app. Keep a user's selection attached to the actual app.
+    func matches(_ other: CaptureApplication) -> Bool {
+        if !bundleIdentifier.isEmpty {
+            return bundleIdentifier == other.bundleIdentifier
+        }
+        return other.bundleIdentifier.isEmpty && id == other.id && name == other.name
+    }
+
+    func resolved(in applications: [CaptureApplication]) -> CaptureApplication? {
+        let matching = applications.filter(matches)
+        return matching.first { $0.id == id } ?? matching.first
+    }
 }
 
 enum AudioCaptureSource: Hashable, Sendable {
     case system
-    case application(Int32)
+    case application(CaptureApplication)
 }
 
-private struct AudioRecordingError: LocalizedError, Sendable {
+struct AudioRecordingError: LocalizedError, Sendable {
     let message: String
+    var requiresCapturePermission: Bool = false
     var errorDescription: String? { message }
 }
 
@@ -26,6 +41,8 @@ final class SystemAudioRecorder {
     private var output: SystemAudioFileOutput?
     private var isStarting = false
     private var isStopping = false
+    private var applicationTerminationObserver: NSObjectProtocol?
+    private var monitoredSessionID: UUID?
 
     func applications() -> [CaptureApplication] {
         // Listing app names must not prompt for screen/audio access. Resolve the
@@ -60,14 +77,22 @@ final class SystemAudioRecorder {
         }
 
         let filter: SCContentFilter
+        var capturedProcessIDs = Set<Int32>()
         switch source {
         case .system:
             filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        case .application(let processID):
-            guard let application = content.applications.first(where: { $0.processID == processID }) else {
+        case .application(let selected):
+            // Resolve the selected app using its bundle identity.
+            // Include every matching entry, as in Apple's capture sample. Never
+            // match a name/prefix or fall back to all-system audio when it exits.
+            let applications = content.applications.filter {
+                selected.matches(CaptureApplication(id: $0.processID, name: $0.applicationName, bundleIdentifier: $0.bundleIdentifier))
+            }
+            guard !applications.isEmpty else {
                 throw AudioRecordingError(message: "선택한 앱을 녹음 대상으로 찾지 못했습니다. 앱 창을 연 뒤 ‘실행 중인 앱 불러오기’를 눌러 다시 선택해 주세요.")
             }
-            filter = SCContentFilter(display: display, including: [application], exceptingWindows: [])
+            filter = SCContentFilter(display: display, including: applications, exceptingWindows: [])
+            capturedProcessIDs = Set(applications.map(\.processID))
         }
 
         let configuration = SCStreamConfiguration()
@@ -86,11 +111,17 @@ final class SystemAudioRecorder {
         let output = try SystemAudioFileOutput(url: url, onLevel: onLevel, onFailure: onFailure)
         let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
         do {
+            if case .application(let selected) = source {
+                try monitorApplicationTermination(processIDs: capturedProcessIDs, name: selected.name) { message in
+                    output.sourceDidTerminate(message)
+                }
+            }
             try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
             try await stream.startCapture()
             self.output = output
             self.stream = stream
         } catch {
+            clearApplicationMonitor()
             await output.cancel()
             throw Self.captureError(error)
         }
@@ -101,6 +132,7 @@ final class SystemAudioRecorder {
             throw AudioRecordingError(message: "진행 중인 녹음이 없습니다.")
         }
         isStopping = true
+        clearApplicationMonitor()
         defer {
             self.stream = nil
             self.output = nil
@@ -109,6 +141,44 @@ final class SystemAudioRecorder {
         // A stream that stopped unexpectedly can still have usable audio to finalize.
         try? await stream.stopCapture()
         return try await output.finish()
+    }
+
+    private func monitorApplicationTermination(
+        processIDs: Set<Int32>, name: String,
+        onFailure: @escaping @MainActor (String) -> Void
+    ) throws {
+        clearApplicationMonitor()
+        let sessionID = UUID()
+        monitoredSessionID = sessionID
+        let center = NSWorkspace.shared.notificationCenter
+        applicationTerminationObserver = center.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  processIDs.contains(app.processIdentifier) else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.monitoredSessionID == sessionID else { return }
+                let running = Set(NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }.map(\.processIdentifier))
+                guard processIDs.isDisjoint(with: running) else { return }
+                self.clearApplicationMonitor()
+                onFailure("\(name)이 종료되어 녹음을 멈춥니다. 지금까지 받은 소리를 저장합니다. 앱을 다시 연 뒤 새 녹음을 시작해 주세요.")
+            }
+        }
+        // Covers an exit between fetching shareable content and registering the
+        // observer, so a stale selection cannot start an apparently healthy stream.
+        let running = Set(NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }.map(\.processIdentifier))
+        guard !processIDs.isDisjoint(with: running) else {
+            clearApplicationMonitor()
+            throw AudioRecordingError(message: "\(name)이 종료되어 녹음을 시작할 수 없습니다. 앱을 다시 열어 주세요.")
+        }
+    }
+
+    private func clearApplicationMonitor() {
+        monitoredSessionID = nil
+        if let applicationTerminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(applicationTerminationObserver)
+            self.applicationTerminationObserver = nil
+        }
     }
 
     private func shareableContent() async throws -> SCShareableContent {
@@ -122,7 +192,7 @@ final class SystemAudioRecorder {
     private static func captureError(_ error: Error) -> Error {
         let nsError = error as NSError
         if nsError.domain == SCStreamErrorDomain && nsError.code == SCStreamError.Code.userDeclined.rawValue {
-            return AudioRecordingError(message: "macOS에서 시스템 오디오 녹음을 허용하지 않았습니다.\n\n시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 ‘강의노트’를 허용한 뒤, ⌘Q로 완전히 종료하고 다시 열어 주세요. 창만 닫으면 앱은 종료되지 않습니다.\n\n이미 켜져 있는데 앱을 업데이트한 뒤에도 이 안내가 나오면, 설정 목록에서 ‘강의노트’만 − 버튼으로 제거하고 + 버튼으로 지금 실행할 앱을 다시 추가해 주세요. 응용 프로그램에 설치했다면 그 폴더의 ‘강의노트’를 선택하세요.")
+            return AudioRecordingError(message: "macOS에서 시스템 오디오 녹음을 허용하지 않았습니다.\n\n시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 ‘강의노트’를 허용한 뒤, ⌘Q로 완전히 종료하고 다시 열어 주세요. 창만 닫으면 앱은 종료되지 않습니다.\n\n이미 켜져 있는데 앱을 업데이트한 뒤에도 이 안내가 나오면, 설정 목록에서 ‘강의노트’만 − 버튼으로 제거하고 + 버튼으로 지금 실행할 앱을 다시 추가해 주세요. 응용 프로그램에 설치했다면 그 폴더의 ‘강의노트’를 선택하세요.", requiresCapturePermission: true)
         }
         return AudioRecordingError(message: "시스템 오디오를 녹음할 수 없습니다: \(error.localizedDescription)")
     }
@@ -207,6 +277,12 @@ private final class SystemAudioFileOutput: NSObject, SCStreamOutput, SCStreamDel
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         let message = "시스템 오디오 녹음이 중단되었습니다: \(error.localizedDescription)"
         queue.async { [self] in reportFailure(message) }
+    }
+
+    func sourceDidTerminate(_ message: String) {
+        // Share the same one-shot failure path as stream/encoder errors, keeping
+        // all successfully written samples available for stop() to finalize.
+        queue.async { [self] in fail(message) }
     }
 
     func finish() async throws -> URL {

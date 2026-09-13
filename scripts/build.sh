@@ -16,6 +16,8 @@ APP_PATH="$APP_ROOT/dist/강의노트.app"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$BIN_DIR/LectureScribe" "$APP_PATH/Contents/MacOS/LectureScribe"
 cp "$APP_ROOT/Resources/Info.plist" "$APP_PATH/Contents/Info.plist"
+mkdir -p "$APP_PATH/Contents/Resources/ThirdPartyLicenses"
+cp "$APP_ROOT/ThirdPartyLicenses/"*.txt "$APP_PATH/Contents/Resources/ThirdPartyLicenses/"
 swift "$APP_ROOT/scripts/make-icon.swift" "$APP_ROOT/.build/AppIcon.iconset"
 iconutil -c icns "$APP_ROOT/.build/AppIcon.iconset" -o "$APP_PATH/Contents/Resources/AppIcon.icns"
 # Reuse an Apple Development identity across local builds when available. Ad-hoc

@@ -24,7 +24,7 @@ struct LectureMenuBar: View {
         }
 
         if model.isRecording {
-            Button("녹음 종료하고 정리하기") {
+            Button("녹음 종료하고 텍스트로 변환") {
                 Task { await model.stopRecording() }
             }
         } else if model.isBusy {

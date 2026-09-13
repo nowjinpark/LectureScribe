@@ -18,13 +18,16 @@ final class AppModel {
     var isRecording = false
     var isStarting = false
     var progress = ""
-    var errorMessage: String?
+    var errorMessage: String? {
+        didSet { needsCapturePermissionHelp = false }
+    }
+    var needsCapturePermissionHelp = false
     var inputLevel: Double = 0
     var recordingStartedAt: Date?
     var activeID: UUID?
     var isDemo = false
     var selectedTab = "transcript"
-    var autoSummarize = true
+    @ObservationIgnored private var hasPreparedRecording = false
     @ObservationIgnored private let recorder = SystemAudioRecorder()
     @ObservationIgnored private let transcriber = TranscriptionService()
     @ObservationIgnored private let summarizer = SummaryService()
@@ -37,13 +40,13 @@ final class AppModel {
     var sourceName: String {
         switch source {
         case .system: "Mac 전체 소리"
-        case .application(let id): applications.first { $0.id == id }?.name ?? "선택한 앱"
+        case .application(let app): app.name
         }
     }
     var isCaptureSourceAvailable: Bool {
         switch source {
         case .system: true
-        case .application(let id): applications.contains { $0.id == id }
+        case .application(let app): app.resolved(in: applications) != nil
         }
     }
     var store: WorkspaceStore? { workspaceURL.map(WorkspaceStore.init(root:)) }
@@ -98,18 +101,30 @@ final class AppModel {
 
     func refreshApplications() {
         applications = recorder.applications()
+        if case .application(let selected) = source,
+           let current = selected.resolved(in: applications) {
+            source = .application(current)
+        }
     }
 
     func beginNewLecture() {
         if workspaceURL == nil { chooseWorkspace() }
         guard workspaceURL != nil, !isBusy else { return }
+        refreshApplications()
+        if !hasPreparedRecording, let zoom = applications.first(where: { $0.bundleIdentifier == "us.zoom.xos" }) {
+            source = .application(zoom)
+        }
+        hasPreparedRecording = true
         newTitle = "강의 \(Date().formatted(date: .abbreviated, time: .shortened))"
         showNewLecture = true
     }
 
     func startRecording() async {
         guard let store, !isBusy else { return }
+        // Re-resolve the same application if Zoom was restarted while the sheet was open.
+        refreshApplications()
         guard isCaptureSourceAvailable else {
+            showNewLecture = false
             errorMessage = "선택한 앱이 실행 중이지 않습니다. 앱 목록을 불러와 녹음할 앱을 다시 선택해 주세요."
             return
         }
@@ -128,12 +143,21 @@ final class AppModel {
             activeID = lecture.id
             selectedTab = "transcript"
             let url = try store.audioURL(for: lecture)!
+            let recordingID = lecture.id
             try await recorder.start(to: url, source: source, onLevel: { [weak self] level in
-                self?.inputLevel = level
+                guard let self, self.activeID == recordingID,
+                      self.isRecording || self.isStarting else { return }
+                self.inputLevel = level
             }, onFailure: { [weak self] message in
-                guard let self else { return }
+                guard let self, self.activeID == recordingID,
+                      self.isRecording || self.isStarting else { return }
                 self.errorMessage = message
-                if self.isRecording { Task { await self.stopRecording(process: false) } }
+                if self.isRecording {
+                    Task {
+                        guard self.activeID == recordingID else { return }
+                        await self.stopRecording(process: false)
+                    }
+                }
                 else if self.isStarting { self.startupCaptureError = message }
             })
             recordingStartedAt = Date()
@@ -147,7 +171,11 @@ final class AppModel {
                 lecture.note = error.localizedDescription
                 try? persist(lecture)
             }
+            // The error belongs to the main window; a still-open recording sheet
+            // would hide it and make a denied start appear to do nothing.
+            showNewLecture = false
             errorMessage = error.localizedDescription
+            needsCapturePermissionHelp = (error as? AudioRecordingError)?.requiresCapturePermission == true
             finishOperation()
         }
         isStarting = false
@@ -221,6 +249,7 @@ final class AppModel {
         isBusy = true
         activeID = id
         selectedID = id
+        selectedTab = summaryOnly ? "summary" : "transcript"
         let previousSegments = lecture.segments
         let previousSummary = lecture.summary
         var transcriptionCommitted = summaryOnly
@@ -252,7 +281,7 @@ final class AppModel {
                     transcriptionCommitted = true
                 }
                 try Task.checkCancellation()
-                if summaryOnly || autoSummarize {
+                if summaryOnly {
                     lecture.status = .summarizing
                     try persist(lecture)
                     let summary = try await summarizer.summarize(text: lecture.transcript, title: lecture.title, onProgress: { [weak self] in self?.progress = $0 })
@@ -344,6 +373,6 @@ final class AppModel {
         let lecture = LectureRecord(title: "머신러닝 · 과적합과 데이터 분할", folderName: "demo", sourceName: "예제 강의", localeIdentifier: "ko-KR", duration: 185, status: .ready, segments: segments, summary: LectureSummary(markdown: "# 과적합과 데이터 분할\n\n## 핵심 내용\n\n• 모델은 처음 보는 데이터에서도 잘 예측해야 합니다.\n\n• 훈련·검증·테스트 세트는 각각 학습, 설정 비교, 최종 평가에 사용합니다.\n\n• 전처리 통계는 훈련 세트에서만 계산해야 데이터 누수를 막을 수 있습니다.\n\n## 복습할 개념\n\n**과적합** — 학습 데이터에는 잘 맞지만 새로운 데이터에는 성능이 떨어지는 현상.\n\n**데이터 누수** — 평가 데이터의 정보가 학습 과정에 들어가는 문제.\n\n## 다음 시간까지\n\n결정 트리 깊이에 따른 훈련·검증 정확도를 비교하고 과적합이 시작되는 지점을 설명하기.\n\n---\n화면을 둘러보기 위한 예제입니다. 실제 녹음이나 AI 변환 결과가 아닙니다.", method: "화면 예제"))
         lectures = [lecture]
         selectedID = lecture.id
-        selectedTab = "summary"
+        selectedTab = "transcript"
     }
 }
