@@ -1,0 +1,45 @@
+name: macOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test on Apple Silicon
+    # Official image inventory: actions/runner-images, macos-26-arm64-Readme.md.
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use the selected Xcode SDK
+        shell: bash
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          xcrun --sdk macosx --show-sdk-version
+          printf 'LECTURESCRIBE_SDK=%s\n' "$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Run unit tests
+        # Pure extraction, storage, recovery, and subtitle tests only.
+        # No screen/audio permission, speech assets, or AI model is required.
+        run: ./scripts/test.sh
+
+      - name: Build the macOS app
+        # The script uses an ad hoc local signature. No release is published.
+        run: ./scripts/build.sh
