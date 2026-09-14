@@ -33,6 +33,23 @@ LECTURESCRIBE_SDK="$(xcrun --sdk macosx --show-sdk-path)" ./scripts/test.sh
 
 별도 지정이 없고 Command Line Tools의 26.5 SDK가 설치되어 있으면 스크립트는 이를 우선 사용합니다. SwiftUI 매크로 플러그인이 누락된 미리보기 SDK 환경을 피하기 위한 처리입니다. 인코더·통합 검증 스크립트는 `xcrun`의 현재 선택된 도구 체인을 사용합니다.
 
+## 설치 파일 만들기
+
+검증한 앱을 일반 macOS Installer 패키지로 묶습니다.
+
+```sh
+./scripts/build.sh
+./scripts/package.sh
+```
+
+이미 검증한 `dist/강의노트.app`이 있으면 `package.sh`만 실행합니다. 패키징은 앱을 다시 빌드하거나 재서명하지 않습니다. 다른 검증본은 `./scripts/package.sh /path/to/강의노트.app`으로 지정할 수 있습니다.
+
+출력은 `dist/LectureScribe-<버전>-arm64.pkg`와 SHA-256 파일입니다. `/Applications`에만 설치하고 macOS 최소 버전·arm64 요구사항을 적용합니다. 번들 이동을 허용하지 않고, 새 버전이 이미 있으면 낮은 버전 설치를 제한합니다. 설치 스크립트·권한 초기화·재부팅 동작은 포함하지 않습니다. 한글 앱 이름은 macOS BOM 생성에 맞춰 NFD로 정규화한 같은 표시 이름을 사용합니다.
+
+패키지 생성 후 실제 payload를 확장해 `codesign --verify --deep --strict`와 원본 디렉터리 비교를 수행합니다. CI도 빌드 후 같은 패키징 검사를 실행합니다. 검사 중 현재 응용 프로그램 폴더를 덮어쓰지 않습니다.
+
+유효한 **Developer ID Installer** 인증서가 있다면 `LECTURESCRIBE_INSTALLER_IDENTITY`로 패키지 서명 인증서를 지정할 수 있습니다. 앱 서명용 인증서와 별개이며, 이 변수만으로 앱에 Developer ID 서명이 추가되거나 공증이 완료되지는 않습니다. 현재 공개 파일은 서명·공증되지 않았습니다. 사용자 설치 과정과 보안 안내는 [설치 가이드](INSTALLATION.md)를 참고하세요.
+
 ## 녹음 권한과 개발 서명
 
 **실행 중인 앱 불러오기** 또는 현재 녹음 대상을 누르면 선택 팝오버가 바로 열립니다. 목록에서 앱 이름 검색과 새로고침을 지원하며, 선택한 앱에 체크를 표시합니다. 앱 조회는 `NSWorkspace`를 사용하므로 화면·오디오 권한을 요청하지 않습니다. 앱 실행 후 첫 녹음 설정에서 Zoom이 실행 중이면 Zoom을 우선 선택합니다.

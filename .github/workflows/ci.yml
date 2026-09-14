@@ -43,3 +43,7 @@ jobs:
       - name: Build the macOS app
         # The script uses an ad hoc local signature. No release is published.
         run: ./scripts/build.sh
+
+      - name: Package and verify the installer
+        # Expands and compares the payload without installing on the runner.
+        run: ./scripts/package.sh

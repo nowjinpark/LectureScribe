@@ -13,6 +13,8 @@ Zoom 등 Mac 앱의 오디오를 직접 녹음하고, 시간 정보가 있는 �
 
 [주요 기능](#주요-기능) · [화면 미리보기](#화면-미리보기) · [시작하기](#시작하기) · [설계 문서](docs/ARCHITECTURE.md) · [개발 가이드](docs/DEVELOPMENT.md)
 
+**[macOS 설치 파일 다운로드 · 1.2.0](https://github.com/nowjinpark/LectureScribe/releases/download/v1.2.0/LectureScribe-1.2.0-arm64.pkg)** · [설치 안내](docs/INSTALLATION.md)
+
 </div>
 
 ![시간 정보와 전체 텍스트, 강의 보관함 화면](docs/images/transcript.jpg)
@@ -47,7 +49,11 @@ Zoom 등 Mac 앱의 오디오를 직접 녹음하고, 시간 정보가 있는 �
 
 ## 시작하기
 
-**Apple Silicon Mac, macOS 26 이상, Swift 6.2 이상 및 호환 SDK**가 필요합니다. 최초 빌드의 패키지 다운로드와 첫 전사의 음성 모델 준비에는 인터넷 연결이 필요합니다. Apple Intelligence는 선택 기능인 생성 요약에만 사용합니다.
+**Apple Silicon Mac, macOS 26 이상**이 필요합니다. [설치 파일](https://github.com/nowjinpark/LectureScribe/releases/download/v1.2.0/LectureScribe-1.2.0-arm64.pkg)을 열어 **계속 → 설치**를 누르면 응용 프로그램 폴더에 설치됩니다. 첫 전사에서는 약 630 MB의 음성 모델을 내려받습니다. Apple Intelligence는 선택 기능인 생성 요약에만 사용합니다.
+
+현재 설치 파일은 **Developer ID 서명·공증이 없는 공개 테스트 배포본**입니다. 다운로드한 파일이 차단되면 [설치 안내](docs/INSTALLATION.md#macos에서-열기를-차단하는-경우)를 확인하세요. macOS 보안 확인과 관리자 인증이 추가될 수 있으며, 완전한 무인 설치는 아닙니다.
+
+소스에서 직접 빌드하려면 Swift 6.2 이상과 호환 SDK, 최초 패키지 다운로드를 위한 인터넷 연결이 필요합니다.
 
 ```sh
 git clone https://github.com/nowjinpark/LectureScribe.git
